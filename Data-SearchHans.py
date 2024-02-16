@@ -5,13 +5,14 @@ import subprocess
 import tkinter as tk
 from tkinter import filedialog, ttk, messagebox
 from xml.etree import ElementTree as ET
+from shapely.geometry import Point, Polygon
 
 class CustomExplorer:
     DEFAULT_WIDTH = 75
 
     def __init__(self, root):
         self.root = root
-        self.root.title("Data SearchHans v0.0.4")
+        self.root.title("Data SearchHans v0.0.5")
         self.root.geometry("1320x800")
 
         self.selected_folder = ""
@@ -41,12 +42,6 @@ class CustomExplorer:
         self.select_folder_button = tk.Button(self.button_row, text="폴더 선택", command=self.select_folder)
         self.select_folder_button.pack(side=tk.LEFT, padx=10)
 
-        self.export_csv_button = tk.Button(self.button_row, text="CSV 내보내기", command=self.export_to_csv)
-        self.export_csv_button.pack(side=tk.LEFT, padx=10)
-
-        self.copy_to_path_button = tk.Button(self.button_row, text="폴더 복사", command=self.copy_to_path)
-        self.copy_to_path_button.pack(side=tk.LEFT, padx=10)
-
         self.create_filter_entry()
 
         self.update_table_button = tk.Button(self.button_row, text="검색", command=self.update_table)
@@ -57,6 +52,9 @@ class CustomExplorer:
 
         self.file_search_button = tk.Button(self.button_row, text="파일로 검색", command=self.file_search)
         self.file_search_button.pack(side=tk.LEFT, padx=10)
+
+        self.kml_search_button = tk.Button(self.button_row, text="KML파일기준 조회", command=self.kml_search)
+        self.kml_search_button.pack(side=tk.LEFT, padx=10)
 
     def create_filter_entry(self):
         self.filter_entry_label = tk.Label(self.button_row, justify="right", text="▶검색(띄워쓰기 AND 조건) :")
@@ -83,8 +81,14 @@ class CustomExplorer:
         self.status_bar = tk.Label(self.status_bar_frame, textvariable=self.status_var, bd=1, relief=tk.SUNKEN, anchor=tk.W)
         self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
 
-        self.get_coordinates_button = tk.Button(self.status_bar_frame, text="동일 L1C 데이터에서 위치불러오기", command=self.get_coordinates)
-        self.get_coordinates_button.pack(side=tk.BOTTOM, padx=10, pady=5)
+        self.get_coordinates_button = tk.Button(self.status_bar_frame, text="L1C데이터 조회 및 위경도 확인", command=self.get_coordinates)
+        self.get_coordinates_button.pack(side=tk.LEFT, padx=10, pady=5)
+        
+        self.export_csv_button = tk.Button(self.status_bar_frame, text="CSV 내보내기", command=self.export_to_csv)
+        self.export_csv_button.pack(side=tk.LEFT, padx=10)
+
+        self.copy_to_path_button = tk.Button(self.status_bar_frame, text="폴더 복사", command=self.copy_to_path)
+        self.copy_to_path_button.pack(side=tk.LEFT, padx=10)        
 
     def select_folder(self):
         self.selected_folder = filedialog.askdirectory()
@@ -95,19 +99,25 @@ class CustomExplorer:
         num_folders = 0
         if os.path.isdir(self.selected_folder):
             num_folders = len([name for name in os.listdir(self.selected_folder) if os.path.isdir(os.path.join(self.selected_folder, name))])
-        self.root.title(f"Data SearchHans v0.0.1 - {self.selected_folder} ({num_folders} datasets)")
+        self.root.title(f"Data SearchHans v0.0.5 - {self.selected_folder} (총 데이터 폴더 수 : {num_folders})")
 
     def update_table(self):
         filter_text = self.filter_entry.get().lower()
         self.table.delete(*self.table.get_children())
+        self.update_status_bar(message="폴더를 읽고 있습니다...")
+
         if os.path.isdir(self.selected_folder):
+            matching_folders = []
             for folder_name in os.listdir(self.selected_folder):
                 folder_path = os.path.join(self.selected_folder, folder_name)
                 if os.path.isdir(folder_path) and all(term.lower() in folder_name.lower() for term in filter_text.split(" ")):
                     folder_data = [folder_name] + folder_name.split("_")[:10]
                     self.table.insert("", "end", values=folder_data)
+                    matching_folders.append(folder_name)
 
-        self.update_status_bar()
+            self.update_status_bar(message=f"{len(matching_folders)}개의 데이터가 조회되었습니다.")
+        else:
+            self.update_status_bar(message="폴더를 선택하세요.")
 
     def sort_column(self, col, reverse):
         data = [(self.table.set(child, col), child) for child in self.table.get_children("")]
@@ -196,6 +206,45 @@ class CustomExplorer:
             self.update_status_bar()
 
             self.display_search_results(search_terms)
+            
+    def get_kml_polygon(self, kml_file):
+        tree = ET.parse(kml_file)
+        root = tree.getroot()
+        coordinates_str = root.find(".//{http://www.opengis.net/kml/2.2}coordinates").text.strip()
+        coordinates_list = [tuple(map(float, coord.strip().split(","))) for coord in coordinates_str.split()]
+
+        if coordinates_list:
+            return Polygon(coordinates_list)
+        else:
+            return None
+            
+    def kml_search(self):
+        kml_file = filedialog.askopenfilename(defaultextension=".kml", filetypes=[("KML files", "*.kml")])
+
+        if kml_file:
+            kml_polygon = self.get_kml_polygon(kml_file)
+
+            if kml_polygon is not None:
+                self.table.delete(*self.table.get_children())
+                self.update_status_bar(message="폴더를 읽고 있습니다...")
+
+                if os.path.isdir(self.selected_folder):
+                    matching_folders = []
+                    for folder_name in os.listdir(self.selected_folder):
+                        folder_path = os.path.join(self.selected_folder, folder_name)
+                        if os.path.isdir(folder_path):
+                            folder_kml_file = self.find_kml_file(folder_path)
+                            if folder_kml_file:
+                                folder_kml_polygon = self.get_kml_polygon(folder_kml_file)
+                                if folder_kml_polygon is not None and kml_polygon.contains(folder_kml_polygon):
+                                    folder_data = [folder_name] + folder_name.split("_")[:10]
+                                    self.table.insert("", "end", values=folder_data)
+                                    matching_folders.append(folder_name)
+
+                    self.update_status_bar(message=f"{len(matching_folders)}개의 데이터가 조회되었습니다.")
+            else:
+                messagebox.showerror("Error", "Failed to extract polygon from the selected KML file.")
+
 
     def display_search_results(self, search_terms):
         matching_folders = [folder_name for folder_name in os.listdir(self.selected_folder)
@@ -232,10 +281,15 @@ class CustomExplorer:
             self.confirmation_window.destroy()
             self.confirmation_window = None
 
-    def update_status_bar(self):
+    def update_status_bar(self, message=None):
         status_text = ""
         if self.selected_folder:
-            status_text = f"선택된 폴더를 읽고 있습니다... ({self.get_total_folders()}개의 데이터가 조회되었습니다.)"
+            if message is not None:
+                status_text = message
+            else:
+                status_text = f"{self.get_total_folders()}개의 데이터가 조회되었습니다."
+        else:
+            status_text = "폴더를 선택하세요."
 
         self.status_var.set(status_text)
 
